@@ -1,0 +1,11 @@
+# Configuration Streamlit (Contient vos mots de passe !)
+.streamlit/secrets.toml
+
+# Environnement virtuel
+.venv/
+venv/
+env/
+
+# Fichiers temporaires Python
+__pycache__/
+*.py[cod]
