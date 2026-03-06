@@ -1,6 +1,28 @@
 import streamlit as st
 import psycopg2
 import pandas as pd
+import time
+
+@st.cache_resource
+def init_connection():
+    retries = 3
+    while retries > 0:
+        try:
+            return psycopg2.connect(
+                host=st.secrets["postgres"]["host"],
+                database=st.secrets["postgres"]["database"],
+                user=st.secrets["postgres"]["user"],
+                password=st.secrets["postgres"]["password"],
+                port=st.secrets["postgres"]["port"],
+                sslmode="require",
+                connect_timeout=10
+            )
+        except psycopg2.OperationalError as e:
+            retries -= 1
+            if retries == 0:
+                st.error("Impossible de contacter la base de données. Vérifiez votre connexion internet.")
+                raise e
+            time.sleep(2) # Attendre 2 secondes avant de réessayer
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Banque - Gestion des Anomalies", page_icon="🏦", layout="wide")
@@ -23,6 +45,7 @@ if 'user_id' not in st.session_state:
     })
 
 # --- CONNEXION ---
+# --- CONNEXION ---
 if st.session_state.user_id is None:
     st.title("🔐 Accès Sécurisé")
     with st.form("login_form"):
@@ -32,7 +55,7 @@ if st.session_state.user_id is None:
             try:
                 conn = init_connection()
                 query = f"""
-                    SELECT u.id_utilisateur, u.nom, r.nom_role, u.id_groupe, g.nom_groupe 
+                    SELECT u.id_utilisateur, u.nom, r.nom_role, u.id_groupe, g.nom_groupe, u.actif
                     FROM utilisateurs u 
                     JOIN groupes g ON u.id_groupe = g.id_groupe
                     JOIN roles r ON u.id_role = r.id_role
@@ -40,19 +63,27 @@ if st.session_state.user_id is None:
                 """
                 user_data = pd.read_sql(query, conn)
                 conn.close()
+                
                 if not user_data.empty:
-                    st.session_state.update({
-                        'user_id': int(user_data.iloc[0]['id_utilisateur']),
-                        'user_role': user_data.iloc[0]['nom_role'],
-                        'user_nom': user_data.iloc[0]['nom'],
-                        'group_id': int(user_data.iloc[0]['id_groupe']),
-                        'group_nom': user_data.iloc[0]['nom_groupe']
-                    })
-                    st.rerun()
+                    # 1. Vérification du statut actif
+                    if not user_data.iloc[0]['actif']:
+                        st.error("🚫 Ce compte a été désactivé. Contactez l'administrateur.")
+                    else:
+                        # 2. REMPLISSAGE INDISPENSABLE DU SESSION STATE
+                        user = user_data.iloc[0]
+                        st.session_state.update({
+                            'user_id': int(user['id_utilisateur']),
+                            'user_nom': user['nom'],
+                            'user_role': user['nom_role'],
+                            'group_id': int(user['id_groupe']),
+                            'group_nom': user['nom_groupe']
+                        })
+                        st.success(f"Bienvenue {user['nom']} !")
+                        st.rerun()
                 else:
                     st.error("Identifiants incorrects.")
             except Exception as e:
-                st.error(f"Erreur : {e}")
+                st.error(f"Erreur de connexion : {e}")
 
 else:
     # --- SIDEBAR ---
@@ -206,40 +237,271 @@ else:
             
 
     # --- PAGE : PARAMÉTRAGE GLOBAL ---
+    # --- PAGE : PARAMÉTRAGE GLOBAL ---
     elif page == "Paramétrage Global":
         st.title("⚙️ Configuration")
         t1, t2, t3, t4 = st.tabs(["📁 Régionales", "🏢 Agences", "🔑 Rôles", "🚩 Types"])
-        # (Le code des onglets reste le même que celui que vous avez fourni)
+        
+        # --- TAB 1 : RÉGIONALES ---
         with t1:
-            with st.form("f_reg"):
-                n = st.text_input("Nom de la Régionale")
+            st.subheader("Nouvelle Régionale")
+            with st.form("f_reg", clear_on_submit=True):
+                n = st.text_input("Nom de la Régionale (ex: CENTRE, OUEST)")
                 if st.form_submit_button("Ajouter"):
-                    c = init_connection(); cur = c.cursor()
-                    cur.execute("INSERT INTO groupes (nom_groupe) VALUES (%s)", (n.upper(),))
-                    c.commit(); c.close(); st.rerun()
+                    if n:
+                        try:
+                            c = init_connection(); cur = c.cursor()
+                            cur.execute("INSERT INTO groupes (nom_groupe) VALUES (%s)", (n.upper().strip(),))
+                            c.commit(); c.close()
+                            st.toast(f"✅ Régionale {n.upper()} ajoutée !")
+                            st.success(f"Régionale '{n.upper()}' enregistrée.")
+                        except Exception as e: st.error(f"Erreur : {e}")
+            
+            # Affichage de la liste des régionales
+            st.write("---")
+            st.subheader("Liste des Régionales")
+            conn = init_connection()
+            # On ne prend que les groupes qui n'ont PAS de parent
+            df_list_reg = pd.read_sql("SELECT id_groupe, nom_groupe as " "Régionale" " FROM groupes WHERE id_parent IS NULL ORDER BY nom_groupe", conn)
+            conn.close()
+            if not df_list_reg.empty:
+                st.dataframe(df_list_reg, use_container_width=True, hide_index=True)
+
+        # --- TAB 2 : AGENCES ---
+        with t2:
+            st.subheader("Nouvelle Agence")
+            conn = init_connection()
+            df_reg_data = pd.read_sql("SELECT id_groupe, nom_groupe FROM groupes WHERE id_parent IS NULL", conn)
+            conn.close()
+            
+            if not df_reg_data.empty:
+                with st.form("f_age", clear_on_submit=True):
+                    n_age = st.text_input("Nom de l'Agence")
+                    reg_options = {row['nom_groupe']: row['id_groupe'] for _, row in df_reg_data.iterrows()}
+                    p = st.selectbox("Rattachée à la Régionale :", options=list(reg_options.keys()))
+                    
+                    if st.form_submit_button("Enregistrer l'Agence"):
+                        if n_age:
+                            try:
+                                id_p = int(reg_options[p])
+                                c = init_connection(); cur = c.cursor()
+                                cur.execute("INSERT INTO groupes (nom_groupe, id_parent) VALUES (%s, %s)", (n_age.upper().strip(), id_p))
+                                c.commit(); c.close()
+                                st.toast(f"✅ Agence {n_age.upper()} créée !")
+                                st.success(f"Agence '{n_age.upper()}' rattachée à {p}.")
+                            except Exception as e: st.error(f"Erreur : {e}")
+            
+            # Affichage de la liste des agences avec leur régionale
+            st.write("---")
+            st.subheader("Liste des Agences et Rattachements")
+            conn = init_connection()
+            # Correction des guillemets pour les alias de colonnes
+            query_agences = """
+                SELECT 
+                    a.nom_groupe AS "Agence", 
+                    r.nom_groupe AS "Régionale de rattachement"
+                FROM groupes a
+                JOIN groupes r ON a.id_parent = r.id_groupe
+                WHERE a.id_parent IS NOT NULL
+                ORDER BY r.nom_groupe, a.nom_groupe
+            """
+            try:
+                df_list_age = pd.read_sql(query_agences, conn)
+                if not df_list_age.empty:
+                    st.dataframe(df_list_age, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Aucune agence enregistrée pour le moment.")
+            except Exception as e:
+                st.error(f"Erreur lors de la lecture des agences : {e}")
+            finally:
+                conn.close()
+
+        # --- TAB 3 : RÔLES ---
+        with t3:
+            with st.form("f_role", clear_on_submit=True):
+                n_role = st.text_input("Nom du Rôle")
+                if st.form_submit_button("Ajouter le rôle"):
+                    if n_role:
+                        try:
+                            c = init_connection(); cur = c.cursor()
+                            cur.execute("INSERT INTO roles (nom_role) VALUES (%s)", (n_role.capitalize(),))
+                            c.commit(); c.close()
+                            st.toast(f"✅ Rôle {n_role} créé !", icon="🔑")
+                            st.success(f"Rôle '{n_role}' ajouté.")
+                        except Exception as e: st.error(f"Erreur : {e}")
+            # Affichage de la liste existante
+            conn = init_connection()
+            df_roles = pd.read_sql("SELECT id_role, nom_role FROM roles ORDER BY nom_role", conn)
+            conn.close()
+            if not df_roles.empty:
+                st.write("---")
+                st.write("**Rôles actuels :**")
+                df_roles.insert(0, "Sél.", False)
+                edited_roles = st.data_editor(df_roles, hide_index=True, use_container_width=True, key="ed_role_admin")
+                delete_items("roles", "id_role", edited_roles[edited_roles["Sél."] == True]["id_role"].tolist())
+            
+            
+
+        # --- TAB 4 : TYPES ---
+        with t4:
+            with st.form("f_type_anom", clear_on_submit=True):
+                n_type = st.text_input("Désignation de l'anomalie")
+                if st.form_submit_button("Ajouter le type"):
+                    if n_type:
+                        try:
+                            c = init_connection(); cur = c.cursor()
+                            cur.execute("INSERT INTO types_anomalies (nom_type) VALUES (%s)", (n_type.capitalize(),))
+                            c.commit(); c.close()
+                            st.toast(f"✅ Type enregistré !", icon="🚩")
+                            st.success(f"Type '{n_type}' ajouté à la liste.")
+                        except Exception as e: st.error(f"Erreur : {e}")
+            
+            # Affichage de la liste existante
+            conn = init_connection()
+            df_types = pd.read_sql("SELECT id_type, nom_type FROM types_anomalies ORDER BY nom_type", conn)
+            conn.close()
+            if not df_types.empty:
+                st.write("---")
+                st.write("**Types enregistrés :**")
+                df_types.insert(0, "Sél.", False)
+                edited_types = st.data_editor(df_types, hide_index=True, use_container_width=True, key="ed_type_admin")
+                delete_items("types_anomalies", "id_type", edited_types[edited_types["Sél."] == True]["id_type"].tolist())
 
     # --- PAGE : GESTION UTILISATEURS ---
+    # --- PAGE : GESTION UTILISATEURS ---
+    # --- PAGE : GESTION UTILISATEURS (VERSION OPTIMISÉE) ---
     elif page == "Gestion Utilisateurs":
         st.title("👥 Administration des Comptes")
-        conn = init_connection()
-        df_r = pd.read_sql("SELECT * FROM roles", conn)
-        df_g = pd.read_sql("SELECT * FROM groupes ORDER BY nom_groupe", conn)
-        conn.close()
-        with st.expander("➕ Créer un utilisateur"):
-            with st.form("f_user"):
-                nom = st.text_input("Nom")
-                em = st.text_input("Email")
-                role_map = {r['nom_role']: r['id_role'] for _, r in df_r.iterrows()}
-                grp_map = {g['nom_groupe']: g['id_groupe'] for _, g in df_g.iterrows()}
-                r_sel = st.selectbox("Rôle", options=list(role_map.keys()))
-                g_sel = st.selectbox("Groupe", options=list(grp_map.keys()))
-                if st.form_submit_button("Créer"):
-                    try:
-                        c = init_connection(); cur = c.cursor()
-                        cur.execute("INSERT INTO utilisateurs (nom, email, id_role, id_groupe, password) VALUES (%s,%s,%s,%s,'12345')",
-                                   (nom, em.lower(), int(role_map[r_sel]), int(grp_map[g_sel])))
-                        c.commit(); c.close(); st.rerun()
-                    except Exception as e: st.error(f"Erreur : {e}")
+        
+        # 1. INITIALISATION DES VARIABLES (Évite le NameError si la DB est lente)
+        df_r = pd.DataFrame(columns=['id_role', 'nom_role'])
+        df_g = pd.DataFrame(columns=['id_groupe', 'nom_groupe'])
+        df_users = pd.DataFrame()
+        conn = None
+
+        # 2. CHARGEMENT UNIQUE DES DONNÉES
+        try:
+            conn = init_connection()
+            # Chargement des rôles et groupes pour les listes déroulantes
+            df_r = pd.read_sql("SELECT id_role, nom_role FROM roles ORDER BY nom_role", conn)
+            df_g = pd.read_sql("SELECT id_groupe, nom_groupe FROM groupes ORDER BY nom_groupe", conn)
+            
+            # Chargement de la liste principale des utilisateurs
+            query_users = """
+                SELECT u.id_utilisateur, u.actif AS "Accès", u.nom AS "Nom", 
+                       u.email AS "Email", r.nom_role AS "Rôle", g.nom_groupe AS "Affectation"
+                FROM utilisateurs u
+                JOIN roles r ON u.id_role = r.id_role
+                JOIN groupes g ON u.id_groupe = g.id_groupe
+                ORDER BY u.nom
+            """
+            df_users = pd.read_sql(query_users, conn)
+            
+        except Exception as e:
+            st.error(f"⚠️ Erreur de connexion : {e}")
+            st.info("Note : Si l'erreur persiste sur localhost, vérifiez que le port 5432 est ouvert dans votre firewall/antivirus.")
+
+        # 3. FORMULAIRE DE CRÉATION
+        if not df_r.empty and not df_g.empty:
+            with st.expander("➕ Créer un nouvel utilisateur", expanded=False):
+                with st.form("f_user", clear_on_submit=True):
+                    c1, c2 = st.columns(2)
+                    nom_new = c1.text_input("Nom complet")
+                    em_new = c2.text_input("Email (Login)").lower().strip()
+                    
+                    role_map = {r['nom_role']: r['id_role'] for _, r in df_r.iterrows()}
+                    grp_map = {g['nom_groupe']: g['id_groupe'] for _, g in df_g.iterrows()}
+                    
+                    r_sel = c1.selectbox("Rôle attribué", options=list(role_map.keys()))
+                    g_sel = c2.selectbox("Affectation", options=list(grp_map.keys()))
+                    pw_new = st.text_input("Mot de passe par défaut", value="12345", type="password")
+                    
+                    if st.form_submit_button("Créer le compte"):
+                        if nom_new and em_new:
+                            try:
+                                cur = conn.cursor()
+                                cur.execute("""
+                                    INSERT INTO utilisateurs (nom, email, id_role, id_groupe, password, actif) 
+                                    VALUES (%s, %s, %s, %s, %s, True)
+                                """, (nom_new, em_new, int(role_map[r_sel]), int(grp_map[g_sel]), pw_new))
+                                conn.commit()
+                                st.success(f"✅ Compte créé pour {nom_new}")
+                                st.rerun()
+                            except Exception as ex:
+                                st.error(f"Erreur d'insertion : {ex}")
+                        else:
+                            st.warning("Veuillez remplir les champs Nom et Email.")
+
+        st.divider()
+
+        # 4. TABLEAU D'ÉDITION DES ACCÈS ET AUDIT
+        if not df_users.empty:
+            st.subheader("Liste des comptes et accès")
+            st.info("Cochez ou décochez la case 'Accès' puis cliquez sur le bouton Sauvegarder en bas.")
+            
+            edited_df = st.data_editor(
+                df_users, 
+                hide_index=True, 
+                use_container_width=True,
+                column_config={
+                    "id_utilisateur": None, # ID masqué
+                    "Accès": st.column_config.CheckboxColumn("Accès", help="Activer/Désactiver l'accès")
+                },
+                disabled=["Nom", "Email", "Rôle", "Affectation"]
+            )
+            
+            if st.button("💾 Sauvegarder les modifications de statut", type="primary"):
+                try:
+                    cur = conn.cursor()
+                    # Récupération de l'état actuel pour comparer et créer l'audit
+                    cur.execute("SELECT id_utilisateur, actif, nom FROM utilisateurs")
+                    old_states = {row[0]: (row[1], row[2]) for row in cur.fetchall()}
+                    
+                    changes = 0
+                    for _, row in edited_df.iterrows():
+                        u_id = int(row["id_utilisateur"])
+                        new_val = bool(row["Accès"])
+                        old_val, u_nom = old_states.get(u_id, (None, "Inconnu"))
+                        
+                        if new_val != old_val:
+                            # Mise à jour
+                            cur.execute("UPDATE utilisateurs SET actif = %s WHERE id_utilisateur = %s", (new_val, u_id))
+                            # Log audit
+                            action_txt = "Activation" if new_val else "Désactivation"
+                            cur.execute("""
+                                INSERT INTO audit_log (admin_nom, utilisateur_cible, action, statut_final)
+                                VALUES (%s, %s, %s, %s)
+                            """, (st.session_state.user_nom, u_nom, action_txt, new_val))
+                            changes += 1
+                    
+                    if changes > 0:
+                        conn.commit()
+                        st.toast(f"✅ {changes} comptes mis à jour !")
+                        st.rerun()
+                    else:
+                        st.info("Aucune modification détectée.")
+                except Exception as e:
+                    st.error(f"Erreur lors de la sauvegarde : {e}")
+
+            # 5. AFFICHAGE DU JOURNAL D'AUDIT
+            with st.expander("📜 Journal d'audit (10 dernières actions)"):
+                try:
+                    df_audit = pd.read_sql("""
+                        SELECT date_action as "Date", admin_nom as "Administrateur", 
+                               utilisateur_cible as "Cible", action as "Action"
+                        FROM audit_log ORDER BY date_action DESC LIMIT 10
+                    """, conn)
+                    if not df_audit.empty:
+                        st.table(df_audit)
+                    else:
+                        st.write("Le journal est vide.")
+                except:
+                    st.write("Journal d'audit indisponible.")
+
+        # FERMETURE DE LA CONNEXION UNIQUE
+        if conn:
+            conn.close()     
+            
 
     # --- PAGE : DÉCLARER UNE ANOMALIE ---
     elif page == "Déclarer une Anomalie":
