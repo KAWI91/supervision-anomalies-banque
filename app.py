@@ -387,14 +387,17 @@ else:
             df_g = pd.read_sql("SELECT id_groupe, nom_groupe FROM groupes ORDER BY nom_groupe", conn)
             
             # Chargement de la liste principale des utilisateurs
+            # Modifie la requête SQL dans la section "Gestion Utilisateurs"
             query_users = """
-                SELECT u.id_utilisateur, u.actif AS "Accès", u.nom AS "Nom", 
-                       u.email AS "Email", r.nom_role AS "Rôle", g.nom_groupe AS "Affectation"
+                SELECT u.id_utilisateur, u.actif AS "Accès", u.matricule AS "Matricule", 
+                    u.nom AS "Nom", u.prenom AS "Prénom", u.code_agence AS "Code Agence",
+                    u.email AS "Email", r.nom_role AS "Rôle", g.nom_groupe AS "Affectation"
                 FROM utilisateurs u
                 JOIN roles r ON u.id_role = r.id_role
                 JOIN groupes g ON u.id_groupe = g.id_groupe
                 ORDER BY u.nom
             """
+            
             df_users = pd.read_sql(query_users, conn)
             
         except Exception as e:
@@ -406,31 +409,43 @@ else:
             with st.expander("➕ Créer un nouvel utilisateur", expanded=False):
                 with st.form("f_user", clear_on_submit=True):
                     c1, c2 = st.columns(2)
-                    nom_new = c1.text_input("Nom complet")
-                    em_new = c2.text_input("Email (Login)").lower().strip()
-                    
+                    nom_new = c1.text_input("Nom de famille")
+                    prenom_new = c2.text_input("Prénom")
+                
+                    em_new = c1.text_input("Email (Login)").lower().strip()
+                    # Validation du matricule (5 chiffres)
+                    mat_new = c2.text_input("Matricule (5 chiffres)", max_chars=5)
+                
                     role_map = {r['nom_role']: r['id_role'] for _, r in df_r.iterrows()}
                     grp_map = {g['nom_groupe']: g['id_groupe'] for _, g in df_g.iterrows()}
-                    
+                
                     r_sel = c1.selectbox("Rôle attribué", options=list(role_map.keys()))
-                    g_sel = c2.selectbox("Affectation", options=list(grp_map.keys()))
-                    pw_new = st.text_input("Mot de passe par défaut", value="12345", type="password")
-                    
+                    g_sel = c2.selectbox("Affectation (Régionale ou Agence)", options=list(grp_map.keys()))
+                
+                # Validation du code agence (5 chiffres)
+                    c_age_new = c1.text_input("Code Agence (5 chiffres)", max_chars=5)
+                    pw_new = c2.text_input("Mot de passe par défaut", value="12345", type="password")
+                
                     if st.form_submit_button("Créer le compte"):
-                        if nom_new and em_new:
+                    # Vérifications de sécurité avant envoi
+                        if not (mat_new.isdigit() and len(mat_new) == 5):
+                            st.error("❌ Le matricule doit contenir exactement 5 chiffres.")
+                        elif c_age_new and not (c_age_new.isdigit() and len(c_age_new) == 5):
+                            st.error("❌ Le code agence doit contenir exactement 5 chiffres.")
+                        elif nom_new and em_new:
                             try:
                                 cur = conn.cursor()
                                 cur.execute("""
-                                    INSERT INTO utilisateurs (nom, email, id_role, id_groupe, password, actif) 
-                                    VALUES (%s, %s, %s, %s, %s, True)
-                                """, (nom_new, em_new, int(role_map[r_sel]), int(grp_map[g_sel]), pw_new))
+                                INSERT INTO utilisateurs (nom, prenom, email, matricule, code_agence, id_role, id_groupe, password, actif) 
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, True)
+                            """, (nom_new.upper(), prenom_new.capitalize(), em_new, mat_new, c_age_new, int(role_map[r_sel]), int(grp_map[g_sel]), pw_new))
                                 conn.commit()
-                                st.success(f"✅ Compte créé pour {nom_new}")
+                                st.success(f"✅ Compte créé pour {prenom_new} {nom_new}")
                                 st.rerun()
                             except Exception as ex:
                                 st.error(f"Erreur d'insertion : {ex}")
                         else:
-                            st.warning("Veuillez remplir les champs Nom et Email.")
+                            st.warning("Veuillez remplir les champs obligatoires (Nom, Prénom, Email).")
 
         st.divider()
 
