@@ -47,6 +47,8 @@ if 'user_id' not in st.session_state:
 # --- CONNEXION ---
 # --- CONNEXION ---
 if st.session_state.user_id is None:
+    st.title("CONTRÖLE PERMANENT")
+    st.title("Fiche de contrôle anomalies")
     st.title("🔐 Accès Sécurisé")
     with st.form("login_form"):
         email = st.text_input("Identifiant (Email)").lower().strip()
@@ -243,74 +245,84 @@ else:
         t1, t2, t3, t4 = st.tabs(["📁 Régionales", "🏢 Agences", "🔑 Rôles", "🚩 Types"])
         
         # --- TAB 1 : RÉGIONALES ---
+        # --- TAB 1 : RÉGIONALES ---
         with t1:
             st.subheader("Nouvelle Régionale")
             with st.form("f_reg", clear_on_submit=True):
-                n = st.text_input("Nom de la Régionale (ex: CENTRE, OUEST)")
+                col_c, col_n = st.columns([1, 3])
+                cod_r = col_c.text_input("Code (3 ch.)", max_chars=3)
+                nom_r = col_n.text_input("Nom de la Régionale (ex: CENTRE)")
+                
                 if st.form_submit_button("Ajouter"):
-                    if n:
+                    if cod_r.isdigit() and len(cod_r) == 3 and nom_r:
                         try:
                             c = init_connection(); cur = c.cursor()
-                            cur.execute("INSERT INTO groupes (nom_groupe) VALUES (%s)", (n.upper().strip(),))
+                            cur.execute("INSERT INTO regionales (code_region, nom_region) VALUES (%s, %s)", (cod_r, nom_r.upper().strip()))
                             c.commit(); c.close()
-                            st.toast(f"✅ Régionale {n.upper()} ajoutée !")
-                            st.success(f"Régionale '{n.upper()}' enregistrée.")
+                            st.success(f"Régionale '{cod_r}' enregistrée.")
+                            st.rerun()
                         except Exception as e: st.error(f"Erreur : {e}")
+                    else:
+                        st.warning("Veuillez saisir un code à 3 chiffres et un nom.")
             
-            # Affichage de la liste des régionales
+            # Affichage de la liste
             st.write("---")
-            st.subheader("Liste des Régionales")
             conn = init_connection()
-            # On ne prend que les groupes qui n'ont PAS de parent
-            df_list_reg = pd.read_sql("SELECT id_groupe, nom_groupe as " "Régionale" " FROM groupes WHERE id_parent IS NULL ORDER BY nom_groupe", conn)
+            df_list_reg = pd.read_sql("SELECT code_region AS Code, nom_region AS Régionale FROM regionales ORDER BY code_region", conn)
             conn.close()
             if not df_list_reg.empty:
                 st.dataframe(df_list_reg, use_container_width=True, hide_index=True)
 
         # --- TAB 2 : AGENCES ---
+        # --- TAB 2 : AGENCES ---
         with t2:
             st.subheader("Nouvelle Agence")
             conn = init_connection()
-            df_reg_data = pd.read_sql("SELECT id_groupe, nom_groupe FROM groupes WHERE id_parent IS NULL", conn)
+            df_reg_ref = pd.read_sql("SELECT id_region, code_region, nom_region FROM regionales", conn)
             conn.close()
             
-            if not df_reg_data.empty:
+            if not df_reg_ref.empty:
                 with st.form("f_age", clear_on_submit=True):
-                    n_age = st.text_input("Nom de l'Agence")
-                    reg_options = {row['nom_groupe']: row['id_groupe'] for _, row in df_reg_data.iterrows()}
+                    c1, c2 = st.columns([1, 2])
+                    cod_a = c1.text_input("Code (5 ch.)", max_chars=5)
+                    nom_a = c2.text_input("Nom de l'Agence")
+                    
+                    reg_options = {f"{r['code_region']} - {r['nom_region']}": r['id_region'] for _, r in df_reg_ref.iterrows()}
                     p = st.selectbox("Rattachée à la Régionale :", options=list(reg_options.keys()))
                     
                     if st.form_submit_button("Enregistrer l'Agence"):
-                        if n_age:
+                        if cod_a.isdigit() and len(cod_a) == 5 and nom_a:
                             try:
-                                id_p = int(reg_options[p])
                                 c = init_connection(); cur = c.cursor()
-                                cur.execute("INSERT INTO groupes (nom_groupe, id_parent) VALUES (%s, %s)", (n_age.upper().strip(), id_p))
+                                cur.execute("INSERT INTO agences (code_agence, nom_agence, id_region) VALUES (%s, %s, %s)", 
+                                           (cod_a, nom_a.upper().strip(), reg_options[p]))
                                 c.commit(); c.close()
-                                st.toast(f"✅ Agence {n_age.upper()} créée !")
-                                st.success(f"Agence '{n_age.upper()}' rattachée à {p}.")
+                                st.success(f"Agence '{cod_a}' créée.")
+                                st.rerun()
                             except Exception as e: st.error(f"Erreur : {e}")
             
-            # Affichage de la liste des agences avec leur régionale
+            # --- LISTE DES AGENCES (Version Tables Dédiées) ---
             st.write("---")
             st.subheader("Liste des Agences et Rattachements")
+            
             conn = init_connection()
-            # Correction des guillemets pour les alias de colonnes
             query_agences = """
                 SELECT 
-                    a.nom_groupe AS "Agence", 
-                    r.nom_groupe AS "Régionale de rattachement"
-                FROM groupes a
-                JOIN groupes r ON a.id_parent = r.id_groupe
-                WHERE a.id_parent IS NOT NULL
-                ORDER BY r.nom_groupe, a.nom_groupe
+                    a.code_agence AS "Code", 
+                    a.nom_agence AS "Agence", 
+                    r.nom_region AS "Régionale de rattachement"
+                FROM agences a
+                JOIN regionales r ON a.id_region = r.id_region
+                ORDER BY r.nom_region, a.code_agence
             """
             try:
                 df_list_age = pd.read_sql(query_agences, conn)
                 if not df_list_age.empty:
+                    # Ajout d'une option de suppression visuelle (optionnel)
+                    df_list_age.insert(0, "Sél.", False)
                     st.dataframe(df_list_age, use_container_width=True, hide_index=True)
                 else:
-                    st.info("Aucune agence enregistrée pour le moment.")
+                    st.info("Aucune agence enregistrée dans la nouvelle structure.")
             except Exception as e:
                 st.error(f"Erreur lors de la lecture des agences : {e}")
             finally:
@@ -346,7 +358,7 @@ else:
         with t4:
             with st.form("f_type_anom", clear_on_submit=True):
                 n_type = st.text_input("Désignation de l'anomalie")
-                if st.form_submit_button("Ajouter le type"):
+                if st.form_submit_button("Ajouter le processus"):
                     if n_type:
                         try:
                             c = init_connection(); cur = c.cursor()
@@ -372,6 +384,19 @@ else:
     # --- PAGE : GESTION UTILISATEURS (VERSION OPTIMISÉE) ---
     elif page == "Gestion Utilisateurs":
         st.title("👥 Administration des Comptes")
+        # --- CHARGEMENT DES DONNÉES DE RÉFÉRENCE ---
+        conn = init_connection()
+        # Récupération des régionales pour info
+        df_reg_ref = pd.read_sql("SELECT id_region, code_region, nom_region FROM regionales ORDER BY code_region", conn)
+        # Récupération des agences avec le nom de leur régionale
+        query_agences_list = """
+            SELECT a.id_agence, a.code_agence, a.nom_agence, r.nom_region 
+            FROM agences a 
+            JOIN regionales r ON a.id_region = r.id_region 
+            ORDER BY a.code_agence
+        """
+        df_age_ref = pd.read_sql(query_agences_list, conn)
+        conn.close()
         
         # 1. INITIALISATION DES VARIABLES (Évite le NameError si la DB est lente)
         df_r = pd.DataFrame(columns=['id_role', 'nom_role'])
@@ -407,45 +432,46 @@ else:
         # 3. FORMULAIRE DE CRÉATION
         if not df_r.empty and not df_g.empty:
             with st.expander("➕ Créer un nouvel utilisateur", expanded=False):
-                with st.form("f_user", clear_on_submit=True):
+                with st.form("f_user_new", clear_on_submit=True):
                     c1, c2 = st.columns(2)
-                    nom_new = c1.text_input("Nom de famille")
-                    prenom_new = c2.text_input("Prénom")
-                
+                    nom_new = c1.text_input("Nom de famille").upper()
+                    prenom_new = c2.text_input("Prénom").capitalize()
+                    
                     em_new = c1.text_input("Email (Login)").lower().strip()
-                    # Validation du matricule (5 chiffres)
                     mat_new = c2.text_input("Matricule (5 chiffres)", max_chars=5)
-                
+                    
+                    # Sélection du Rôle
                     role_map = {r['nom_role']: r['id_role'] for _, r in df_r.iterrows()}
-                    grp_map = {g['nom_groupe']: g['id_groupe'] for _, g in df_g.iterrows()}
-                
                     r_sel = c1.selectbox("Rôle attribué", options=list(role_map.keys()))
-                    g_sel = c2.selectbox("Affectation (Régionale ou Agence)", options=list(grp_map.keys()))
-                
-                # Validation du code agence (5 chiffres)
-                    c_age_new = c1.text_input("Code Agence (5 chiffres)", max_chars=5)
-                    pw_new = c2.text_input("Mot de passe par défaut", value="12345", type="password")
-                
+                    
+                    # --- SÉLECTION DE L'AGENCE (LISTE DÉROULANTE) ---
+                    # On crée une étiquette propre : "00101 - Agence Alger"
+                    age_options = {f"{row['code_agence']} - {row['nom_agence']}": row['code_agence'] 
+                                for _, row in df_age_ref.iterrows()}
+                    
+                    age_display = c2.selectbox("Affectation Agence", options=list(age_options.keys()))
+                    code_age_final = age_options[age_display] # On récupère juste les 5 chiffres
+                    
+                    pw_new = st.text_input("Mot de passe par défaut", value="12345", type="password")
+                    
                     if st.form_submit_button("Créer le compte"):
-                    # Vérifications de sécurité avant envoi
-                        if not (mat_new.isdigit() and len(mat_new) == 5):
-                            st.error("❌ Le matricule doit contenir exactement 5 chiffres.")
-                        elif c_age_new and not (c_age_new.isdigit() and len(c_age_new) == 5):
-                            st.error("❌ Le code agence doit contenir exactement 5 chiffres.")
-                        elif nom_new and em_new:
+                        if nom_new and prenom_new and em_new and mat_new.isdigit() and len(mat_new) == 5:
                             try:
+                                conn = init_connection()
                                 cur = conn.cursor()
                                 cur.execute("""
-                                INSERT INTO utilisateurs (nom, prenom, email, matricule, code_agence, id_role, id_groupe, password, actif) 
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, True)
-                            """, (nom_new.upper(), prenom_new.capitalize(), em_new, mat_new, c_age_new, int(role_map[r_sel]), int(grp_map[g_sel]), pw_new))
+                                    INSERT INTO utilisateurs (nom, prenom, email, matricule, code_agence, id_role, id_groupe, password, actif) 
+                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, True)
+                                """, (nom_new, prenom_new, em_new, mat_new, code_age_final, int(role_map[r_sel]), 1, pw_new)) 
+                                # Note: id_groupe est mis à 1 par défaut ici, à adapter selon ta structure
                                 conn.commit()
-                                st.success(f"✅ Compte créé pour {prenom_new} {nom_new}")
+                                conn.close()
+                                st.success(f"✅ Compte créé pour {prenom_new} {nom_new} (Agence {code_age_final})")
                                 st.rerun()
                             except Exception as ex:
-                                st.error(f"Erreur d'insertion : {ex}")
+                                st.error(f"Erreur : {ex}")
                         else:
-                            st.warning("Veuillez remplir les champs obligatoires (Nom, Prénom, Email).")
+                            st.warning("Vérifiez les champs (Nom, Prénom, Email et Matricule à 5 chiffres).")
 
         st.divider()
 
