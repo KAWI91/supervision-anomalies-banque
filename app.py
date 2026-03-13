@@ -119,7 +119,9 @@ else:
                     reg.nom_region as regionale, age.nom_agence as agence, 
                     u.nom as agent, ta.nom_type as type, 
                     a.montant_erreur, rc.libelle_crit as criticite, 
-                    a.statut_regle
+                    a.statut_regle,
+                    a.description,
+                    a.commentaire_resolution
                 FROM anomalies a 
                 JOIN utilisateurs u ON a.id_utilisateur = u.id_utilisateur 
                 JOIN agences age ON a.code_agence = age.code_agence 
@@ -215,66 +217,135 @@ else:
                 if role_user in roles_decideurs:
                     st.divider()
                     st.subheader("✅ Validation des règlements")
-                    
-                    # On filtre les anomalies non réglées
+                        
                     df_a_regler = df[df['statut_regle'] == False].copy()
-                    
+                        
                     if not df_a_regler.empty:
-                        st.info("Sélectionnez les anomalies que vous avez régularisées, puis validez.")
-                        df_a_regler.insert(0, "Réglé", False) # Colonne de case à cocher
-                        
-                        # Éditeur pour pointer les anomalies
-                        edited_cloture = st.data_editor(
-                            df_a_regler[['Réglé', 'id_anomalie', 'type', 'montant_erreur', 'criticite', 'agent']], 
-                            hide_index=True,
-                            use_container_width=True,
-                            column_config={
-                                "Réglé": st.column_config.CheckboxColumn("Valider"),
-                                "id_anomalie": None # Cacher l'ID technique
-                            },
-                            disabled=['type', 'montant_erreur', 'criticite', 'agent']
-                        )
-                        
-                        if st.button("Enregistrer les clôtures", type="primary"):
-                            # On récupère les IDs cochés
-                            ids_valides = edited_cloture[edited_cloture["Réglé"] == True]["id_anomalie"].tolist()
-                            
-                            if ids_valides:
-                                try:
-                                    cur = conn.cursor()
-                                    # Mise à jour de la table anomalies
-                                    cur.execute("""
-                                        UPDATE anomalies 
-                                        SET statut_regle = True, date_reglement = NOW() 
-                                        WHERE id_anomalie IN %s
-                                    """, (tuple(ids_valides),))
-                                    
-                                    # Audit de l'action
-                                    for id_ano in ids_valides:
+                            # On crée un formulaire pour la validation
+                        with st.form("form_validation"):
+                            st.info("Sélectionnez l'anomalie à clôturer et saisissez l'action corrective.")
+                                
+                            col_sel, col_com = st.columns([1, 2])
+                                
+                            with col_sel:
+                                    # On choisit UNE anomalie à la fois pour être précis sur le commentaire
+                                id_to_close = st.selectbox("Anomalie à régler :", 
+                                                            options=df_a_regler['id_anomalie'].tolist())
+                                
+                            with col_com:
+                                comm_direction = st.text_input("Commentaire de résolution / Action menée :")
+                                
+                            submit_val = st.form_submit_button("Valider la clôture", type="primary")
+
+                            if submit_val:
+                                if comm_direction:
+                                    try:
+                                        cur = conn.cursor()
+                                        cur.execute("""
+                                            UPDATE anomalies 
+                                            SET statut_regle = True, 
+                                                date_reglement = NOW(),
+                                                commentaire_resolution = %s 
+                                                WHERE id_anomalie = %s
+                                            """, (comm_direction, id_to_close))
+                                            
+                                            # Audit
                                         cur.execute("""
                                             INSERT INTO audit_actions (id_administrateur, action_type, details)
                                             VALUES (%s, %s, %s)
-                                        """, (st.session_state.user_id, 'CLOTURE_ANOMALIE', f"Anomalie #{id_ano} marquée réglée"))
-                                    
-                                    conn.commit()
-                                    st.success(f"✅ {len(ids_valides)} anomalies mises à jour !")
-                                    time.sleep(1)
-                                    st.rerun()
-                                except Exception as e:
-                                    conn.rollback()
-                                    st.error(f"Erreur lors de la mise à jour : {e}")
+                                            """, (st.session_state.user_id, 'CLOTURE_ANOMALIE', f"Anomalie #{id_to_close} réglée : {comm_direction}"))
+                                            
+                                        conn.commit()
+                                        st.success(f"✅ L'anomalie #{id_to_close} a été clôturée avec succès !")
+                                        time.sleep(1)
+                                        st.rerun()
+                                    except Exception as e:
+                                        conn.rollback()
+                                        st.error(f"Erreur : {e}")
+                                else:
+                                        st.warning("⚠️ Veuillez saisir un commentaire de résolution avant de valider.")
                             else:
-                                st.warning("Veuillez cocher au moins une case.")
-                    else:
-                        st.success("🎉 Toutes les anomalies de votre périmètre sont réglées.")
+                                st.success("🎉 Toutes les anomalies de votre périmètre sont réglées.")
 
                 # --- FIN DE LA SECTION VALIDATION ---
+                
 
+                #st.divider()
+                #st.write("**Détail complet des anomalies :**")
+                #st.dataframe(df, use_container_width=True, hide_index=True)
+                
+                # --- FIN DE LA SECTION VALIDATION ---
+
+                # --- 🔍 Rubrique : Consultation détaillée ---
                 st.divider()
-                st.write("**Détail complet des anomalies :**")
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                st.subheader("🔎 Consultation détaillée & Fiche Anomalie")
+
+                # Création du label de recherche
+                df['search_label'] = df['id_anomalie'].astype(str) + " | " + df['agence'] + " | " + df['type']
+                
+                selection = st.selectbox(
+                    "Choisir une anomalie pour afficher les détails complets :", 
+                    options=["-- Sélectionner un ID --"] + df['search_label'].tolist()
+                )
+
+                if selection != "-- Sélectionner un ID --":
+                    id_selectionne = int(selection.split(" | ")[0])
+                    detail = df[df['id_anomalie'] == id_selectionne].iloc[0]
+                    
+                    # --- AFFICHAGE DE LA FICHE ---
+                    with st.container(border=True):
+                        st.markdown(f"### 📄 FICHE DÉTAILLÉE : Anomalie #{id_selectionne}")
+                        
+                        c1, c2, c3 = st.columns(3)
+                        with c1:
+                            st.write(f"**📅 Date :** {detail['date_constat'].strftime('%d/%m/%Y')}")
+                            st.write(f"**🏢 Régionale :** {detail['regionale']}")
+                            st.write(f"**📍 Agence :** {detail['agence']}")
+                        with c2:
+                            st.write(f"**🛠️ Type :** {detail['type']}")
+                            st.write(f"**👤 Déclarant :** {detail['agent']}")
+                            st.write(f"**⚠️ Criticité :** {detail['criticite']}")
+                        with c3:
+                            st.write(f"**💰 Montant :** {detail['montant_erreur']} DZD")
+                            statut = "🟢 Réglée" if detail['statut_regle'] else "🔴 En cours"
+                            st.write(f"**📊 État actuel :** {statut}")
+
+                        st.divider()
+                        
+                        # --- AFFICHAGE DE LA DESCRIPTION ---
+                        st.markdown("**📝 Description détaillée des faits :**")
+                        # On utilise st.caption ou un st.info pour faire ressortir le texte
+                        desc_text = detail['description'] if detail['description'] else "Aucun commentaire renseigné."
+                        st.info(desc_text)
+                        
+            
+    
+                        st.divider()
+                        
+                        col_desc, col_res = st.columns(2)
+                        with col_desc:
+                            st.markdown("**📝 Description (Agent) :**")
+                            st.info(detail['description'] if detail['description'] else "Pas de description.")
+                        
+                        with col_res:
+                            st.markdown("**🛠️ Résolution (Direction) :**")
+                            if detail['statut_regle']:
+                                st.success(detail['commentaire_resolution'] if detail['commentaire_resolution'] else "Régularisée sans commentaire.")
+                            else:
+                                st.warning("En attente de régularisation...")
+
+                # --- TABLEAU GLOBAL (caché par défaut pour gagner de la place) ---
+                with st.expander("📊 Voir le tableau récapitulatif complet"):
+                    # On retire 'search_label' et 'description' pour que le tableau reste lisible
+                    st.dataframe(
+                        df.drop(columns=['search_label', 'description']), 
+                        use_container_width=True, 
+                        hide_index=True
+                    )
                 
             conn.close()
+                
+            #conn.close()
                 
     # --- DECLARATION DES ANOMALIES ---
     elif page == "Déclarer une Anomalie":
@@ -323,10 +394,16 @@ else:
         conn = get_connection()
         if conn:
             # --- ONGLET 1 : CRÉATION UTILISATEUR ---
+            # --- ONGLET 1 : CRÉATION UTILISATEUR ---
             with tab1:
                 st.subheader("Ajouter un nouvel agent")
+                
+                # Récupération des données
                 df_roles = pd.read_sql("SELECT id_role, nom_role FROM roles", conn)
-                df_agences = pd.read_sql("SELECT code_agence, nom_agence FROM agences", conn)
+                df_agences = pd.read_sql("SELECT code_agence, nom_agence FROM agences ORDER BY code_agence", conn)
+                
+                # 1. CRÉATION DU LIBELLÉ COMBINÉ (Code - Nom)
+                df_agences['display_agence'] = df_agences['code_agence'].astype(str) + " - " + df_agences['nom_agence']
                 
                 with st.form("form_new_user"):
                     col1, col2 = st.columns(2)
@@ -334,27 +411,33 @@ else:
                     prenom = col2.text_input("Prénom")
                     email = col1.text_input("Email / Login")
                     pwd = col2.text_input("Mot de passe par défaut", value="12345")
+                    
                     role_sel = col1.selectbox("Rôle", options=df_roles['nom_role'].tolist())
-                    age_sel = col2.selectbox("Agence", options=df_agences['code_agence'].tolist())
+                    
+                    # 2. UTILISATION DU LIBELLÉ COMBINÉ DANS LE SELECTBOX
+                    age_sel_display = col2.selectbox("Agence", options=df_agences['display_agence'].tolist())
                     
                     if st.form_submit_button("Créer l'utilisateur"):
-                        if nom and prenom and email: # Vérification simple
+                        if nom and prenom and email:
                             conn = get_connection()
                             if conn:
                                 try:
+                                    # 3. EXTRACTION DU CODE AGENCE (On prend tout ce qui est avant le " - ")
+                                    age_code_final = age_sel_display.split(" - ")[0]
+                                    
                                     id_r = int(df_roles[df_roles['nom_role'] == role_sel]['id_role'].iloc[0])
                                     cur = conn.cursor()
                                     
-                                    # 1. Insertion de l'utilisateur avec RETURNING pour avoir l'ID
+                                    # Insertion avec le code agence extrait
                                     cur.execute("""
                                         INSERT INTO utilisateurs (nom, prenom, email, password, id_role, code_agence, actif)
                                         VALUES (%s, %s, %s, %s, %s, %s, True)
                                         RETURNING id_utilisateur
-                                    """, (nom.upper(), prenom, email, pwd, id_r, age_sel))
+                                    """, (nom.upper(), prenom, email, pwd, id_r, age_code_final))
                                     
                                     new_user_id = cur.fetchone()[0]
                                     
-                                    # 2. Audit de la création
+                                    # Audit de la création
                                     cur.execute("""
                                         INSERT INTO audit_actions (id_administrateur, action_type, cible_utilisateur_id, details)
                                         VALUES (%s, %s, %s, %s)
@@ -371,6 +454,8 @@ else:
                                 finally:
                                     cur.close()
                                     conn.close()
+                        else:
+                            st.warning("Veuillez remplir les champs obligatoires (Nom, Prénom, Email).")
 
             # --- ONGLET 2 : STRUCTURE ---
             with tab2:
