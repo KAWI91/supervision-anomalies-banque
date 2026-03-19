@@ -1,0 +1,6 @@
+[theme]
+base="dark"
+primaryColor="#00E676"         # Un vert fluo pour les boutons (très lisible sur noir)
+backgroundColor="#0E1117"      # Le noir profond de Streamlit
+secondaryBackgroundColor="#1A1C24" # Gris très foncé pour la sidebar
+textColor="#FFFFFF"
