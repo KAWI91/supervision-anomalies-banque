@@ -453,8 +453,6 @@ else:
                 m3.metric("⏳ En cours", nb_en_cours, delta=f"{(nb_en_cours/total_ano*100):.1f}%", delta_color="inverse")
                 m4.metric("📈 Taux de Résolution", f"{taux_reglement:.1f}%")
 
-                m4.metric("📈 Taux de Résolution", f"{taux_reglement:.1f}%")
-
                 # --- AJOUTER ICI : ALERTE DES 24H ---
                 from datetime import datetime, timedelta
                 seuil_24h = datetime.now() - timedelta(hours=24)
